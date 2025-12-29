@@ -18,18 +18,13 @@ const fs = require("fs");
 const app = express();
 
 
-
 // CORS so your React app (Vite) can talk to this server
 app.use(
   cors({
-    origin: [
-      process.env.CLIENT_ORIGIN || "http://localhost:5173",
-      "http://localhost:5174" // Vite fallback port
-    ],
+    origin: process.env.CLIENT_ORIGIN || "http://localhost:5173",
     credentials: true,
   })
 );
-
 
 // Parse JSON bodies
 app.use(express.json({ limit: "2mb" }));
@@ -139,9 +134,6 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-// Centralized mailer (falls back to SendGrid if SMTP fails)
-const mailer = require('./mailer');
-
 // Optional verify (won’t crash server)
 (async () => {
   try {
@@ -212,25 +204,19 @@ function generateUid(role) {
   const n = Math.floor(1000 + Math.random() * 9000);
   if (role === "Admin") return `AD-${n}`;
   if (role === "Doctor") return `DC-${n}`;
-  if (role === "Assistant") return `AS-${n}`;
   return `PT-${n}`;
 }
 
 function normalizeRoleFromClient(role) {
-  // Client may send: Admin/Doctor/Patient/Assistant OR ADMIN/DOCTOR/PATIENT/ASSISTANT
-  if (!role) return "Patient";
-  const r = String(role).trim();
-  const u = r.toUpperCase();
-  if (u === "ADMIN" || r === "Admin") return "Admin";
-  if (u === "DOCTOR" || r === "Doctor") return "Doctor";
-  if (u === "ASSISTANT" || r === "Assistant") return "Assistant";
+  const upper = String(role || "").toUpperCase();
+  if (upper === "ADMIN") return "Admin";
+  if (upper === "DOCTOR") return "Doctor";
   return "Patient";
 }
 
 function normalizeRoleToClient(dbRole) {
   if (dbRole === "Admin") return "ADMIN";
   if (dbRole === "Doctor") return "DOCTOR";
-  if (dbRole === "Assistant") return "ASSISTANT";
   return "PATIENT";
 }
 
@@ -276,21 +262,16 @@ async function ensureAgentEventsSchema() {
         id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
         event_type VARCHAR(64) NOT NULL,
         payload_json LONGTEXT NULL,
-        status ENUM('NEW','PENDING','PROCESSING','DONE','FAILED') NOT NULL DEFAULT 'NEW',
+        status ENUM('PENDING','PROCESSING','DONE','FAILED') NOT NULL DEFAULT 'PENDING',
         available_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
         locked_by VARCHAR(64) NULL,
         locked_until DATETIME NULL,
         attempts INT NOT NULL DEFAULT 0,
-        max_attempts INT NOT NULL DEFAULT 7,
-        priority INT NOT NULL DEFAULT 100,
         last_error TEXT NULL,
-        expires_at DATETIME NULL,
-        next_retry_at DATETIME NULL,
         created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         PRIMARY KEY (id),
         KEY idx_status_available (status, available_at),
-        KEY idx_status_retry (status, next_retry_at),
         KEY idx_event_type (event_type),
         KEY idx_locked_until (locked_until),
         KEY idx_created_at (created_at)
@@ -304,22 +285,14 @@ async function ensureAgentEventsSchema() {
       } catch (_) {}
     };
 
-    await alterSafe(`ALTER TABLE agent_events MODIFY COLUMN status ENUM('NEW','PENDING','PROCESSING','DONE','FAILED') NOT NULL DEFAULT 'NEW'`);
     await alterSafe(`ALTER TABLE agent_events ADD COLUMN available_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP AFTER status`);
     await alterSafe(`ALTER TABLE agent_events ADD COLUMN locked_by VARCHAR(64) NULL AFTER available_at`);
     await alterSafe(`ALTER TABLE agent_events ADD COLUMN locked_until DATETIME NULL AFTER locked_by`);
     await alterSafe(`ALTER TABLE agent_events ADD COLUMN attempts INT NOT NULL DEFAULT 0 AFTER locked_until`);
-    await alterSafe(`ALTER TABLE agent_events ADD COLUMN max_attempts INT NOT NULL DEFAULT 7 AFTER attempts`);
-    await alterSafe(`ALTER TABLE agent_events ADD COLUMN priority INT NOT NULL DEFAULT 100 AFTER max_attempts`);
-    await alterSafe(`ALTER TABLE agent_events ADD COLUMN last_error TEXT NULL AFTER priority`);
-    await alterSafe(`ALTER TABLE agent_events ADD COLUMN expires_at DATETIME NULL AFTER last_error`);
-    await alterSafe(`ALTER TABLE agent_events ADD COLUMN next_retry_at DATETIME NULL AFTER expires_at`);
+    await alterSafe(`ALTER TABLE agent_events ADD COLUMN last_error TEXT NULL AFTER attempts`);
     await alterSafe(`ALTER TABLE agent_events ADD COLUMN updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP`);
-
     await alterSafe(`ALTER TABLE agent_events ADD KEY idx_status_available (status, available_at)`);
-    await alterSafe(`ALTER TABLE agent_events ADD KEY idx_status_retry (status, next_retry_at)`);
     await alterSafe(`ALTER TABLE agent_events ADD KEY idx_event_type (event_type)`);
-    await alterSafe(`ALTER TABLE agent_events ADD KEY idx_locked_until (locked_until)`);
 
     console.log("✅ agent_events schema ready (Python worker queue)");
   } catch (e) {
@@ -399,7 +372,7 @@ async function retryFailedCompat(limit = 100) {
   try {
     const [r] = await pool.query(
       `UPDATE agent_events
-       SET status='NEW',
+       SET status='PENDING',
            available_at=NOW(),
            locked_by=NULL,
            locked_until=NULL,
@@ -430,14 +403,9 @@ async function ensureNotificationsSchema() {
         type VARCHAR(64) NULL,
         title VARCHAR(200) NULL,
         message TEXT NOT NULL,
-        status ENUM('NEW','PENDING','SENT','FAILED','READ') NOT NULL DEFAULT 'NEW',
+        status ENUM('PENDING','SENT','FAILED','READ') NOT NULL DEFAULT 'PENDING',
         scheduled_at DATETIME NULL,
         read_at DATETIME NULL,
-        priority INT NOT NULL DEFAULT 100,
-        related_entity_type VARCHAR(40) NULL,
-        related_entity_id BIGINT NULL,
-        template_key VARCHAR(64) NULL,
-        template_vars_json LONGTEXT NULL,
         meta_json LONGTEXT NULL,
         created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
         sent_at DATETIME NULL,
@@ -457,20 +425,12 @@ async function ensureNotificationsSchema() {
       } catch (_) {}
     };
 
-    await alterSafe(`ALTER TABLE notifications MODIFY COLUMN status ENUM('NEW','PENDING','SENT','FAILED','READ') NOT NULL DEFAULT 'NEW'`);
     await alterSafe(`ALTER TABLE notifications ADD COLUMN user_role VARCHAR(16) NULL AFTER user_id`);
     await alterSafe(`ALTER TABLE notifications ADD COLUMN type VARCHAR(64) NULL AFTER channel`);
     await alterSafe(`ALTER TABLE notifications ADD COLUMN title VARCHAR(200) NULL AFTER type`);
     await alterSafe(`ALTER TABLE notifications ADD COLUMN scheduled_at DATETIME NULL AFTER status`);
     await alterSafe(`ALTER TABLE notifications ADD COLUMN read_at DATETIME NULL AFTER scheduled_at`);
-    await alterSafe(`ALTER TABLE notifications ADD COLUMN priority INT NOT NULL DEFAULT 100 AFTER read_at`);
-    await alterSafe(`ALTER TABLE notifications ADD COLUMN related_entity_type VARCHAR(40) NULL AFTER priority`);
-    await alterSafe(`ALTER TABLE notifications ADD COLUMN related_entity_id BIGINT NULL AFTER related_entity_type`);
-    await alterSafe(`ALTER TABLE notifications ADD COLUMN template_key VARCHAR(64) NULL AFTER related_entity_id`);
-    await alterSafe(`ALTER TABLE notifications ADD COLUMN template_vars_json LONGTEXT NULL AFTER template_key`);
-    await alterSafe(`ALTER TABLE notifications ADD COLUMN meta_json LONGTEXT NULL AFTER template_vars_json`);
     await alterSafe(`ALTER TABLE notifications ADD COLUMN updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP`);
-
     await alterSafe(`ALTER TABLE notifications ADD KEY idx_role (user_role)`);
     await alterSafe(`ALTER TABLE notifications ADD KEY idx_scheduled_at (scheduled_at)`);
 
@@ -507,67 +467,6 @@ async function ensureCaseAttachmentsSchema() {
 ensureCaseAttachmentsSchema();
 
 // ===================================
-// ✅ CLINIC SETUP + ROLES/PERMISSIONS (safe, additive)
-// ===================================
-async function ensureClinicSetupSchema() {
-  try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS clinic_settings (
-        id TINYINT NOT NULL,
-        clinic_name VARCHAR(120) NULL,
-        clinic_phone VARCHAR(40) NULL,
-        clinic_email VARCHAR(190) NULL,
-        clinic_address TEXT NULL,
-        timezone VARCHAR(64) NOT NULL DEFAULT 'Asia/Kolkata',
-        working_hours_json LONGTEXT NULL,
-        treatment_catalog_json LONGTEXT NULL,
-        note_templates_json LONGTEXT NULL,
-        ai_preferences_json LONGTEXT NULL,
-        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        PRIMARY KEY (id)
-      ) ENGINE=InnoDB;
-    `);
-
-    await pool.query(`INSERT IGNORE INTO clinic_settings (id, timezone) VALUES (1, 'Asia/Kolkata')`);
-
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS role_permissions (
-        role ENUM('Admin','Doctor','Assistant','Patient') NOT NULL,
-        permissions_json LONGTEXT NULL,
-        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        PRIMARY KEY (role)
-      ) ENGINE=InnoDB;
-    `);
-
-    // Seed defaults (idempotent)
-    await pool.query(
-      `INSERT IGNORE INTO role_permissions (role, permissions_json) VALUES
-        ('Admin', '{"admin_all":true}'),
-        ('Doctor', '{"doctor_portal":true,"cases":true,"appointments":true}'),
-        ('Assistant', '{"assistant_portal":true,"inventory":true,"appointments":true}'),
-        ('Patient', '{"patient_portal":true,"appointments":true,"billing":true}')`
-    );
-
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS patient_profiles (
-        user_id BIGINT UNSIGNED NOT NULL,
-        medical_history TEXT NULL,
-        allergies TEXT NULL,
-        notes TEXT NULL,
-        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        PRIMARY KEY (user_id)
-      ) ENGINE=InnoDB;
-    `);
-
-    console.log('✅ clinic_settings + role_permissions + patient_profiles ready');
-  } catch (e) {
-    console.error('ensureClinicSetupSchema failed:', e?.message || e);
-  }
-}
-ensureClinicSetupSchema();
-
-// ===================================
 // ✅ Schema capability detection (to keep conflict logic robust across DB versions)
 // ===================================
 const schemaCaps = {
@@ -594,7 +493,6 @@ async function detectSchemaCaps() {
 }
 detectSchemaCaps();
 
-
 // ===================================
 // HEALTH CHECK
 // ===================================
@@ -608,18 +506,14 @@ app.get("/api/health", (req, res) => {
 app.post("/api/auth/email-otp/request", async (req, res) => {
   try {
     const { email } = req.body || {};
-    console.log("👉 /api/auth/email-otp/request called with:", req.body);
     if (!email) {
-      console.log("❌ Email missing");
       return res.status(400).json({ message: "Email is required" });
     }
 
     const normalizedEmail = String(email).trim().toLowerCase();
 
     const [existing] = await pool.query("SELECT id, full_name FROM users WHERE email = ?", [normalizedEmail]);
-    console.log("🔍 Existing user check:", existing);
     if (existing.length > 0) {
-      console.log("❌ Email already registered");
       return res.status(409).json({ message: "Email already registered. Please login instead." });
     }
 
@@ -627,22 +521,20 @@ app.post("/api/auth/email-otp/request", async (req, res) => {
     const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes
     signupOtpStore.set(normalizedEmail, { code: otp, expiresAt });
 
-
     const html = buildEmailVerificationHtml(null, otp);
 
-    console.log("📧 Sending email via mailer...");
-    await mailer.sendMail({
+    await transporter.sendMail({
       from: process.env.MAIL_FROM || '"Dental Clinic AI" <no-reply@clinic.ai>',
       to: normalizedEmail,
       subject: "Verify your Dental Clinic AI email",
-      html: buildEmailVerificationHtml(null, otp),
+      html,
       text: `Your Dental Clinic AI email verification code is ${otp}. It expires in 10 minutes.`,
     });
 
     return res.json({ message: "Verification code sent" });
   } catch (err) {
-    console.error("❌ EMAIL OTP REQUEST ERROR:", err);
-    return res.status(500).json({ message: "Server error: " + err.message });
+    console.error("EMAIL OTP REQUEST ERROR:", err);
+    return res.status(500).json({ message: "Server error" });
   }
 });
 
@@ -807,7 +699,7 @@ app.post("/api/auth/forgot-password", async (req, res) => {
 
     const html = buildOtpEmailHtml(user.full_name, otp);
 
-    await mailer.sendMail({
+    await transporter.sendMail({
       from: process.env.MAIL_FROM || '"Dental Clinic AI" <no-reply@clinic.ai>',
       to: user.email,
       subject: "Your Dental Clinic AI password reset code",
@@ -907,7 +799,7 @@ app.post("/api/auth/reset-password", async (req, res) => {
 
     try {
       const html = buildPasswordChangedEmailHtml(user.full_name);
-      await mailer.sendMail({
+      await transporter.sendMail({
         from: process.env.MAIL_FROM || '"Dental Clinic AI" <no-reply@clinic.ai>',
         to: normalizedEmail,
         subject: "Your Dental Clinic AI password was changed",
@@ -1149,361 +1041,6 @@ app.get("/api/events/stream", authMiddleware, (req, res) => {
 // ADMIN ROUTES
 // ===================================
 const ADMIN_BASE = "/api/admin";
-
-// ===================================
-// ✅ ADMIN: CLINIC SETUP (clinic profile, hours, templates, permissions)
-// ===================================
-app.get(
-  `${ADMIN_BASE}/clinic-setup`,
-  authMiddleware,
-  requireRole("Admin"),
-  async (req, res) => {
-    try {
-      const rows = await safeQuery(
-        "CLINIC SETTINGS",
-        `SELECT
-           id, clinic_name, clinic_phone, clinic_email, clinic_address, timezone,
-           working_hours_json, treatment_catalog_json, note_templates_json, ai_preferences_json,
-           updated_at
-         FROM clinic_settings
-         WHERE id = 1
-         LIMIT 1`,
-        []
-      );
-
-      const r = rows[0] || {};
-      const parseJson = (x, fallback) => {
-        try {
-          return x ? JSON.parse(String(x)) : fallback;
-        } catch {
-          return fallback;
-        }
-      };
-
-      // role permissions
-      const rp = await safeQuery(
-        "ROLE PERMISSIONS",
-        `SELECT role, permissions_json FROM role_permissions ORDER BY role`,
-        []
-      );
-
-      const permissions = {};
-      for (const row of rp) {
-        permissions[row.role] = parseJson(row.permissions_json, {});
-      }
-
-      return res.json({
-        clinic: {
-          clinicName: r.clinic_name || "",
-          phone: r.clinic_phone || "",
-          email: r.clinic_email || "",
-          address: r.clinic_address || "",
-          timezone: r.timezone || "Asia/Kolkata",
-          workingHours: parseJson(r.working_hours_json, { start: "09:00", end: "18:00", stepMin: 15, days: [1,2,3,4,5,6] }),
-          treatmentCatalog: parseJson(r.treatment_catalog_json, []),
-          noteTemplates: parseJson(r.note_templates_json, []),
-          aiPreferences: parseJson(r.ai_preferences_json, { enableAiSummaries: true, enableSmartScheduling: true }),
-          updatedAt: r.updated_at || null,
-        },
-        permissions,
-      });
-    } catch (e) {
-      console.error("GET clinic-setup error:", e);
-      return res.json({
-        clinic: {
-          clinicName: "",
-          phone: "",
-          email: "",
-          address: "",
-          timezone: "Asia/Kolkata",
-          workingHours: { start: "09:00", end: "18:00", stepMin: 15, days: [1,2,3,4,5,6] },
-          treatmentCatalog: [],
-          noteTemplates: [],
-          aiPreferences: { enableAiSummaries: true, enableSmartScheduling: true },
-          updatedAt: null,
-        },
-        permissions: {},
-        error: true,
-      });
-    }
-  }
-);
-
-app.put(
-  `${ADMIN_BASE}/clinic-setup`,
-  authMiddleware,
-  requireRole("Admin"),
-  async (req, res) => {
-    try {
-      const {
-        clinicName,
-        phone,
-        email,
-        address,
-        timezone,
-        workingHours,
-        treatmentCatalog,
-        noteTemplates,
-        aiPreferences,
-        permissions,
-      } = req.body || {};
-
-      await pool.query(
-        `UPDATE clinic_settings
-         SET clinic_name = ?, clinic_phone = ?, clinic_email = ?, clinic_address = ?, timezone = ?,
-             working_hours_json = ?, treatment_catalog_json = ?, note_templates_json = ?, ai_preferences_json = ?,
-             updated_at = NOW()
-         WHERE id = 1`,
-        [
-          clinicName ? String(clinicName).trim() : null,
-          phone ? String(phone).trim() : null,
-          email ? String(email).trim() : null,
-          address ? String(address).trim() : null,
-          timezone ? String(timezone).trim() : "Asia/Kolkata",
-          workingHours ? JSON.stringify(workingHours) : null,
-          treatmentCatalog ? JSON.stringify(treatmentCatalog) : null,
-          noteTemplates ? JSON.stringify(noteTemplates) : null,
-          aiPreferences ? JSON.stringify(aiPreferences) : null,
-        ]
-      );
-
-      // Save role permissions (config only; middleware can enforce later)
-      if (permissions && typeof permissions === "object") {
-        for (const [role, perms] of Object.entries(permissions)) {
-          if (!["Admin","Doctor","Assistant","Patient"].includes(String(role))) continue;
-          await pool.query(
-            `INSERT INTO role_permissions (role, permissions_json)
-             VALUES (?, ?)
-             ON DUPLICATE KEY UPDATE permissions_json = VALUES(permissions_json), updated_at = NOW()`,
-            [String(role), JSON.stringify(perms || {})]
-          );
-        }
-      }
-
-      return res.json({ ok: true });
-    } catch (e) {
-      console.error("PUT clinic-setup error:", e);
-      return res.status(500).json({ message: "Failed to save clinic setup" });
-    }
-  }
-);
-
-// ===================================
-// ✅ ADMIN: USER MANAGEMENT (create staff + patients, list users)
-// ===================================
-function roleDbFromClient(role) {
-  const upper = String(role || "").toUpperCase().trim();
-  if (upper === "ADMIN") return "Admin";
-  if (upper === "DOCTOR") return "Doctor";
-  if (upper === "ASSISTANT") return "Assistant";
-  return "Patient";
-}
-
-function roleClientFromDb(roleDb) {
-  if (roleDb === "Admin") return "ADMIN";
-  if (roleDb === "Doctor") return "DOCTOR";
-  if (roleDb === "Assistant") return "ASSISTANT";
-  return "PATIENT";
-}
-
-function randomTempPassword() {
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$";
-  let out = "";
-  for (let i = 0; i < 10; i++) out += chars[Math.floor(Math.random() * chars.length)];
-  return out;
-}
-
-function buildInviteEmailHtml(name, roleLabel, tempPassword) {
-  const safeName = (name || "there").toString();
-  const safeRole = (roleLabel || "user").toString();
-  const safePw = (tempPassword || "").toString();
-  return `
-  <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto">
-    <h2 style="margin:0 0 10px 0">Your ${safeRole} account is ready</h2>
-    <p style="margin:0 0 10px 0">Hi ${safeName},</p>
-    <p style="margin:0 0 10px 0">An admin created your Dental Clinic AI account.</p>
-    <p style="margin:0 0 10px 0"><b>Temporary password:</b></p>
-    <div style="font-size:20px;font-weight:700;letter-spacing:1px;padding:10px 14px;border:1px solid #e5e7eb;border-radius:10px;display:inline-block">
-      ${safePw}
-    </div>
-    <p style="margin:12px 0 0 0;color:#6b7280">Login with this password and change it immediately using “Forgot password”.</p>
-  </div>`;
-}
-
-app.get(
-  `${ADMIN_BASE}/users`,
-  authMiddleware,
-  requireRole("Admin"),
-  async (req, res) => {
-    try {
-      const role = req.query.role ? String(req.query.role) : "";
-      const roleDb = role ? roleDbFromClient(role) : null;
-
-      const rows = await safeQuery(
-        "ADMIN USERS LIST",
-        `SELECT id, uid, full_name, email, phone, role, created_at
-         FROM users
-         WHERE (? IS NULL OR role = ?)
-         ORDER BY created_at DESC
-         LIMIT 500`,
-        [roleDb, roleDb]
-      );
-
-      const items = rows.map((u) => ({
-        id: u.id,
-        uid: u.uid,
-        fullName: u.full_name,
-        email: u.email,
-        phone: u.phone,
-        role: roleClientFromDb(u.role),
-        createdAt: u.created_at,
-      }));
-
-      return res.json({ items });
-    } catch (e) {
-      console.error("GET admin/users error:", e);
-      return res.json({ items: [], error: true });
-    }
-  }
-);
-
-app.post(
-  `${ADMIN_BASE}/users`,
-  authMiddleware,
-  requireRole("Admin"),
-  async (req, res) => {
-    try {
-      const {
-        role,
-        fullName,
-        email,
-        phone,
-        dob,
-        gender,
-        address,
-        medicalHistory,
-        allergies,
-        notes,
-        sendInviteEmail,
-        tempPassword,
-      } = req.body || {};
-
-      if (!role || !fullName) {
-        return res.status(400).json({ message: "role and fullName are required" });
-      }
-
-      const roleDb = roleDbFromClient(role);
-      if (!["Admin","Doctor","Assistant","Patient"].includes(roleDb)) {
-        return res.status(400).json({ message: "Invalid role" });
-      }
-
-      const name = String(fullName).trim();
-      const normalizedEmail = email ? String(email).trim().toLowerCase() : null;
-
-      // Require email for staff roles (so they can login)
-      if (["Admin","Doctor","Assistant"].includes(roleDb) && !normalizedEmail) {
-        return res.status(400).json({ message: "Email is required for staff accounts" });
-      }
-
-      if (normalizedEmail) {
-        const [existing] = await pool.query(`SELECT id FROM users WHERE email = ? LIMIT 1`, [normalizedEmail]);
-        if (existing.length) {
-          return res.status(409).json({ message: "Email already exists" });
-        }
-      }
-
-      const uid = generateUid(roleDb);
-
-      // Password behavior:
-      // - Staff: always create a password (provided or generated) so login works
-      // - Patient: optional password; if email provided, create password so patient can use portal
-      let passwordHash = null;
-      let usedTempPassword = null;
-
-      if (["Admin","Doctor","Assistant"].includes(roleDb) || normalizedEmail) {
-        const pw = tempPassword && String(tempPassword).trim() ? String(tempPassword).trim() : randomTempPassword();
-        usedTempPassword = pw;
-        passwordHash = await bcrypt.hash(pw, 10);
-      }
-
-      const [result] = await pool.query(
-        `INSERT INTO users
-          (uid, full_name, email, phone, dob, gender, address, role, password_hash)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          uid,
-          name,
-          normalizedEmail,
-          phone ? String(phone).trim() : null,
-          dob ? String(dob).trim() : null,
-          gender ? String(gender).trim() : null,
-          address ? String(address).trim() : null,
-          roleDb,
-          passwordHash,
-        ]
-      );
-
-      const newUserId = result.insertId;
-
-      // Patient profile extras
-      if (roleDb === "Patient") {
-        try {
-          await pool.query(
-            `INSERT INTO patient_profiles (user_id, medical_history, allergies, notes)
-             VALUES (?, ?, ?, ?)
-             ON DUPLICATE KEY UPDATE medical_history = VALUES(medical_history), allergies = VALUES(allergies), notes = VALUES(notes)`,
-            [
-              newUserId,
-              medicalHistory ? String(medicalHistory) : null,
-              allergies ? String(allergies) : null,
-              notes ? String(notes) : null,
-            ]
-          );
-        } catch (e) {
-          console.error("patient_profiles upsert failed:", e?.message || e);
-        }
-      }
-
-      // Optional invite email
-      const shouldSend =
-        String(sendInviteEmail || "").toLowerCase() === "true" ||
-        sendInviteEmail === 1 ||
-        sendInviteEmail === true;
-
-      if (shouldSend && normalizedEmail && usedTempPassword) {
-        try {
-          const roleLabel = roleDb === "Doctor" ? "Doctor" : roleDb === "Assistant" ? "Assistant" : roleDb;
-          const html = buildInviteEmailHtml(name, roleLabel, usedTempPassword);
-          await transporter.sendMail({
-            from: process.env.MAIL_FROM || '"Dental Clinic AI" <no-reply@clinic.ai>',
-            to: normalizedEmail,
-            subject: "Your Dental Clinic AI account details",
-            html,
-            text: `Your ${roleLabel} account is ready. Temporary password: ${usedTempPassword}. Please change it using Forgot password after login.`,
-          });
-        } catch (e) {
-          console.error("Invite email failed:", e?.message || e);
-        }
-      }
-
-      return res.status(201).json({
-        message: "User created",
-        user: {
-          id: newUserId,
-          uid,
-          fullName: name,
-          email: normalizedEmail,
-          phone: phone || null,
-          role: roleClientFromDb(roleDb),
-        },
-      });
-    } catch (e) {
-      console.error("POST admin/users error:", e);
-      return res.status(500).json({ message: "Failed to create user" });
-    }
-  }
-);
-
 
 // DASHBOARD SUMMARY (UNCHANGED)
 app.get(
