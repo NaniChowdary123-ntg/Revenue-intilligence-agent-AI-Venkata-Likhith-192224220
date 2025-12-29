@@ -1,0 +1,14 @@
+Starting SMTP Check...
+Host: smtp.gmail.com
+Port: 587
+User: Dental.agenticai@gmail.com
+Verifying connection...
+❌ SMTP Error: connect ETIMEDOUT 172.253.118.108:587
+{
+  "errno": -4039,
+  "code": "ESOCKET",
+  "syscall": "connect",
+  "address": "172.253.118.108",
+  "port": 587,
+  "command": "CONN"
+}

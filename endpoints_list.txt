@@ -1,0 +1,72 @@
+﻿[
+  {
+    "line": 597,
+    "method": "GET",
+    "path": "/api/health"
+  },
+  {
+    "line": 604,
+    "method": "POST",
+    "path": "/api/auth/email-otp/request"
+  },
+  {
+    "line": 645,
+    "method": "POST",
+    "path": "/api/auth/email-otp/verify"
+  },
+  {
+    "line": 680,
+    "method": "POST",
+    "path": "/api/auth/register"
+  },
+  {
+    "line": 744,
+    "method": "POST",
+    "path": "/api/auth/login"
+  },
+  {
+    "line": 781,
+    "method": "POST",
+    "path": "/api/auth/forgot-password"
+  },
+  {
+    "line": 821,
+    "method": "POST",
+    "path": "/api/auth/verify-otp"
+  },
+  {
+    "line": 861,
+    "method": "POST",
+    "path": "/api/auth/reset-password"
+  },
+  {
+    "line": 988,
+    "method": "GET",
+    "path": "/api/auth/me"
+  },
+  {
+    "line": 1004,
+    "method": "GET",
+    "path": "/api/notifications"
+  },
+  {
+    "line": 1040,
+    "method": "POST",
+    "path": "/api/notifications/:id/read"
+  },
+  {
+    "line": 1067,
+    "method": "POST",
+    "path": "/api/notifications/read-all"
+  },
+  {
+    "line": 1096,
+    "method": "GET",
+    "path": "/api/events/stream"
+  },
+  {
+    "line": 3418,
+    "method": "GET",
+    "path": "/debug/routes"
+  }
+]
